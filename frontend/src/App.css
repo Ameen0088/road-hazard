@@ -31,6 +31,12 @@ body {
   gap: 15px;
 }
 
+.header-right {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+}
+
 .vw-logo {
   background: #001e50;
   color: white;
@@ -47,7 +53,7 @@ body {
   font-weight: 600;
 }
 
-.status {
+.status, .ai-status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -67,12 +73,23 @@ body {
   color: #721c24;
 }
 
+.ai-status.loaded {
+  background: #e7f3ff;
+  color: #004085;
+}
+
+.ai-status.loading {
+  background: #fff3cd;
+  color: #856404;
+}
+
 .tabs {
   background: white;
   display: flex;
   padding: 0 30px;
   gap: 10px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  overflow-x: auto;
 }
 
 .tab {
@@ -88,6 +105,7 @@ body {
   font-weight: 500;
   cursor: pointer;
   transition: all 0.3s;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -107,6 +125,154 @@ body {
   max-width: 1400px;
   width: 100%;
   margin: 0 auto;
+}
+
+.ai-view {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 30px;
+}
+
+.ai-upload-section {
+  background: white;
+  padding: 30px;
+  border-radius: 15px;
+  box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+}
+
+.subtitle {
+  color: #666;
+  margin-bottom: 25px;
+  font-size: 14px;
+}
+
+.upload-btn {
+  width: 100%;
+  padding: 20px;
+  background: linear-gradient(135deg, #001e50 0%, #003d82 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 25px;
+}
+
+.upload-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 30, 80, 0.3);
+}
+
+.upload-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.image-preview {
+  margin: 25px 0;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 12px;
+}
+
+.image-preview h3 {
+  color: #001e50;
+  margin-bottom: 15px;
+  font-size: 18px;
+}
+
+.image-preview .small {
+  color: #666;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.analyzing {
+  text-align: center;
+  padding: 40px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  margin: 20px 0;
+}
+
+.spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid #e0e0e0;
+  border-top: 4px solid #001e50;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.analyzing p {
+  color: #001e50;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 10px 0;
+}
+
+.analyzing .small {
+  color: #666;
+  font-size: 13px;
+}
+
+.detection-results {
+  margin: 25px 0;
+  padding: 20px;
+  background: #e7f3ff;
+  border-radius: 12px;
+  border-left: 4px solid #001e50;
+}
+
+.detection-results h3 {
+  color: #001e50;
+  margin-bottom: 20px;
+  font-size: 18px;
+}
+
+.hazards-grid {
+  display: grid;
+  gap: 15px;
+}
+
+.detected-hazard {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 15px;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.detected-hazard strong {
+  display: block;
+  color: #001e50;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.detected-hazard p {
+  margin: 2px 0;
+  font-size: 13px;
+  color: #666;
+}
+
+.detected-hazard .small {
+  font-size: 12px;
+  color: #999;
 }
 
 .report-view {
@@ -434,6 +600,16 @@ h2 {
   border-bottom: none;
 }
 
+.insights-card strong {
+  color: #ffd700;
+}
+
+@media (max-width: 1200px) {
+  .ai-view {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 1024px) {
   .report-view {
     grid-template-columns: 1fr;
@@ -454,11 +630,12 @@ h2 {
     gap: 15px;
   }
   
-  .tabs {
-    overflow-x: auto;
+  .header-right {
+    width: 100%;
+    justify-content: space-between;
   }
   
-  .tab {
-    white-space: nowrap;
+  .tabs {
+    overflow-x: auto;
   }
 }
