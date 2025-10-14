@@ -1,507 +1,615 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MapPin, AlertTriangle, CheckCircle, Activity, TrendingUp, Navigation, Camera, Upload, Cpu } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Popup, Circle } from 'react-leaflet';
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import io from 'socket.io-client';
+import axios from 'axios';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import './App.css';
+import { loadModels, detectHazards, drawDetections, isModelLoaded } from './aiDetection';
 
-const styles = `
-  * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-  }
+const API_URL = 'http://localhost:3001';
 
-  body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #001e50 0%, #003d82 100%);
-    min-height: 100vh;
-  }
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
 
-  ::-webkit-scrollbar {
-    width: 8px;
-  }
+const SEVERITY_COLORS = ['#28a745', '#ffc107', '#dc3545'];
 
-  ::-webkit-scrollbar-track {
-    background: rgba(0, 30, 80, 0.3);
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: rgba(59, 130, 246, 0.6);
-    border-radius: 4px;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(59, 130, 246, 0.9);
-  }
-`;
-
-export default function HazardDetectionApp() {
-  const [activeTab, setActiveTab] = useState('ai');
+function App() {
   const [hazards, setHazards] = useState([]);
-  const [detectedHazards, setDetectedHazards] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState(null);
+  const [activeTab, setActiveTab] = useState('ai');
+  const [aiModelsLoaded, setAiModelsLoaded] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [uploadedImage, setUploadedImage] = useState(null);
-  const [aiStatus, setAiStatus] = useState('Ready');
-  const [showLocationPicker, setShowLocationPicker] = useState(false);
-  const fileInputRef = useRef(null);
-
-  const [manualReport, setManualReport] = useState({
-    type: 'debris',
-    severity: 'medium',
-    latitude: 40.7128,
-    longitude: -74.0060,
-    locationName: 'New York, NY',
-    description: ''
+  const [detectedHazards, setDetectedHazards] = useState([]);
+  const [processedImage, setProcessedImage] = useState(null);
+  const [formData, setFormData] = useState({
+    type: 'pothole',
+    latitude: '',
+    longitude: '',
+    severity: 'medium'
   });
 
-  const locationPresets = [
-    { name: 'Current Location', lat: 40.7128, lng: -74.0060, action: 'live' },
-    { name: 'Downtown Area', lat: 40.7580, lng: -73.9855, action: 'preset' },
-    { name: 'Highway Route', lat: 40.6892, lng: -74.0445, action: 'preset' },
-    { name: 'Residential Zone', lat: 40.7614, lng: -73.9776, action: 'preset' }
-  ];
+  const imageRef = useRef();
+  const canvasRef = useRef();
+  const fileInputRef = useRef();
 
   useEffect(() => {
-    fetchHazards();
-    const interval = setInterval(fetchHazards, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    const socket = io(API_URL);
+    
+    socket.on('connect', () => {
+      setConnected(true);
+    });
 
-  const fetchHazards = async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/hazards');
-      const data = await res.json();
-      setHazards(data.hazards || []);
-    } catch (error) {
-      console.error('Error fetching hazards:', error);
-    }
-  };
+    socket.on('hazard_alert', (hazard) => {
+      setHazards(prev => [hazard, ...prev]);
+    });
 
-  const getUserLocation = () => {
+    socket.on('disconnect', () => {
+      setConnected(false);
+    });
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          const { latitude, longitude } = position.coords;
-          setManualReport(prev => ({
+          const location = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          };
+          setCurrentLocation(location);
+          setFormData(prev => ({
             ...prev,
-            latitude,
-            longitude,
-            locationName: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+            latitude: location.lat.toFixed(6),
+            longitude: location.lng.toFixed(6)
           }));
-          alert('✅ Live location captured!');
         },
-        (error) => {
-          alert('❌ Unable to get location. Make sure location is enabled.');
+        () => {
+          const defaultLocation = { lat: 13.3409, lng: 74.7421 };
+          setCurrentLocation(defaultLocation);
+          setFormData(prev => ({
+            ...prev,
+            latitude: defaultLocation.lat.toFixed(6),
+            longitude: defaultLocation.lng.toFixed(6)
+          }));
         }
       );
     }
-  };
 
-  const handleImageUpload = async (e) => {
+    loadModels().then(loaded => {
+      setAiModelsLoaded(loaded);
+    });
+
+    return () => socket.disconnect();
+  }, []);
+
+  const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    setLoading(true);
-    setAiStatus('Uploading...');
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setUploadedImage(event.target.result);
+      setDetectedHazards([]);
+      setProcessedImage(null);
+    };
+    reader.readAsDataURL(file);
+  };
 
+  const analyzeImage = async () => {
+    if (!imageRef.current || !isModelLoaded()) {
+      alert('AI model is still loading. Please wait...');
+      return;
+    }
+
+    setAnalyzing(true);
     try {
-      const formData = new FormData();
-      formData.append('image', file);
+      console.log('🎯 Starting image analysis...');
+      const hazards = await detectHazards(imageRef.current);
+      setDetectedHazards(hazards);
 
-      const res = await fetch('http://localhost:3001/api/upload', {
-        method: 'POST',
-        body: formData
-      });
+      if (hazards.length > 0) {
+        const processed = drawDetections(canvasRef.current, imageRef.current, hazards);
+        setProcessedImage(processed);
 
-      const data = await res.json();
-      if (data.success) {
-        setUploadedImage(data.imageUrl);
-        setAiStatus('Processing...');
+        const topHazard = hazards[0];
+        setFormData(prev => ({
+          ...prev,
+          type: topHazard.type,
+          severity: topHazard.severity
+        }));
         
-        setTimeout(() => {
-          setDetectedHazards([
-            { type: 'debris', confidence: 92, class: 'bottle' },
-            { type: 'pothole', confidence: 78, class: 'hole' }
-          ]);
-          setAiStatus('Detection Complete');
-        }, 2000);
+        console.log('✅ Analysis complete! Found', hazards.length, 'hazards');
+      } else {
+        console.log('⚠️ No hazards detected');
+        alert('No hazards detected. Try a different image or report manually.');
       }
     } catch (error) {
-      console.error('Upload error:', error);
-      setAiStatus('Error');
+      console.error('Analysis error:', error);
+      alert('Error analyzing image: ' + error.message);
     } finally {
-      setLoading(false);
+      setAnalyzing(false);
     }
   };
 
-  const reportManualHazard = async () => {
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
     try {
-      const res = await fetch('http://localhost:3001/api/hazards/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(manualReport)
+      const response = await axios.post(`${API_URL}/api/hazards/report`, {
+        ...formData,
+        latitude: parseFloat(formData.latitude),
+        longitude: parseFloat(formData.longitude),
+        deviceId: 'vw-ai-app',
+        confidence: detectedHazards.length > 0 ? detectedHazards[0].confidence : 100
       });
 
-      const data = await res.json();
-      if (data.success) {
-        alert('Hazard reported successfully!');
-        fetchHazards();
-        setManualReport({
-          type: 'debris',
-          severity: 'medium',
-          latitude: 40.7128,
-          longitude: -74.0060,
-          locationName: 'New York, NY',
-          description: ''
-        });
+      if (response.data.duplicate) {
+        alert('⚠️ Similar hazard already reported nearby!');
+      } else {
+        alert('✅ Hazard reported successfully!');
+      }
+      
+      // Reset form
+      setFormData(prev => ({
+        type: 'pothole',
+        latitude: prev.latitude,
+        longitude: prev.longitude,
+        severity: 'medium'
+      }));
+      
+      // Only clear AI-related data if on AI tab
+      if (activeTab === 'ai') {
+        setUploadedImage(null);
+        setDetectedHazards([]);
+        setProcessedImage(null);
       }
     } catch (error) {
       console.error('Error reporting hazard:', error);
+      alert('❌ Failed to report hazard');
     }
   };
 
-  const reportDetectedHazard = async (hazard) => {
-    try {
-      const res = await fetch('http://localhost:3001/api/hazards/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: hazard.type,
-          latitude: manualReport.latitude,
-          longitude: manualReport.longitude,
-          severity: 'high',
-          confidence: hazard.confidence,
-          imageUrl: uploadedImage
-        })
+  const handleChange = (e) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value
+    });
+  };
+
+  const useMyLocation = () => {
+    if (currentLocation) {
+      setFormData({
+        ...formData,
+        latitude: currentLocation.lat.toFixed(6),
+        longitude: currentLocation.lng.toFixed(6)
       });
-
-      const data = await res.json();
-      if (data.success) {
-        alert('Hazard reported to network!');
-        fetchHazards();
-      }
-    } catch (error) {
-      console.error('Error reporting hazard:', error);
+    } else {
+      alert('Location not available. Please enable location services.');
     }
   };
 
-  const getStats = () => {
-    const debrisCt = hazards.filter(h => h.type === 'debris').length;
-    const accidentCt = hazards.filter(h => h.type === 'accident').length;
-    const potholeCt = hazards.filter(h => h.type === 'pothole').length;
-    return { debrisCt, accidentCt, potholeCt };
-  };
+  const hazardTypeData = Object.entries(
+    hazards.reduce((acc, h) => {
+      acc[h.type] = (acc[h.type] || 0) + 1;
+      return acc;
+    }, {})
+  ).map(([name, value]) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), value }));
 
-  const stats = getStats();
+  const severityData = Object.entries(
+    hazards.reduce((acc, h) => {
+      acc[h.severity] = (acc[h.severity] || 0) + 1;
+      return acc;
+    }, {})
+  ).map(([name, value]) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), value }));
 
   return (
-    <div style={{ background: 'linear-gradient(135deg, #001e50 0%, #003d82 100%)', minHeight: '100vh', color: 'white', fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif' }}>
-      <style>{styles}</style>
-
-      {/* Header */}
-      <header style={{ background: 'rgba(0, 20, 40, 0.8)', borderBottom: '2px solid #3b82f6', padding: '20px 0', position: 'sticky', top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h1 style={{ fontSize: '32px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <AlertTriangle size={32} color="#fbbf24" />
-            VW Hazard Detection
-          </h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(59, 130, 246, 0.2)', padding: '8px 16px', borderRadius: '8px', border: '1px solid #3b82f6' }}>
-            <Cpu size={20} />
-            <span style={{ fontSize: '14px', fontWeight: '500' }}>{aiStatus}</span>
+    <div className="App">
+      <header className="App-header">
+        <div className="header-left">
+          <div className="vw-logo">VW</div>
+          <h1>AI Road Hazard Detection</h1>
+        </div>
+        <div className="header-right">
+          <div className={`ai-status ${aiModelsLoaded ? 'loaded' : 'loading'}`}>
+            <Cpu size={16} />
+            {aiModelsLoaded ? 'AI Ready' : 'Loading AI...'}
+          </div>
+          <div className={`status ${connected ? 'connected' : 'disconnected'}`}>
+            {connected ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+            {connected ? 'Connected' : 'Disconnected'}
           </div>
         </div>
       </header>
 
-      {/* Tabs */}
-      <div style={{ borderBottom: '1px solid #3b82f6', background: 'rgba(0, 20, 40, 0.4)' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 24px', display: 'flex', gap: '24px' }}>
-          {[
-            { id: 'ai', label: 'AI Detection', icon: '🤖' },
-            { id: 'manual', label: 'Manual Report', icon: '📍' },
-            { id: 'analytics', label: 'Analytics', icon: '📊' }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              style={{
-                padding: '16px 24px',
-                fontWeight: '500',
-                borderBottom: activeTab === tab.id ? '3px solid #fbbf24' : '3px solid transparent',
-                background: 'transparent',
-                color: activeTab === tab.id ? '#fbbf24' : '#9ca3af',
-                cursor: 'pointer',
-                fontSize: '16px',
-                transition: 'all 0.3s ease'
-              }}
-              onMouseEnter={(e) => !e.target.style.borderBottom.includes('#fbbf24') && (e.target.style.color = '#fff')}
-              onMouseLeave={(e) => !e.target.style.borderBottom.includes('#fbbf24') && (e.target.style.color = '#9ca3af')}
-            >
-              {tab.icon} {tab.label}
-            </button>
-          ))}
-        </div>
+      <div className="tabs">
+        <button 
+          className={`tab ${activeTab === 'ai' ? 'active' : ''}`}
+          onClick={() => setActiveTab('ai')}
+        >
+          <Camera size={18} /> AI Detection
+        </button>
+        <button 
+          className={`tab ${activeTab === 'manual' ? 'active' : ''}`}
+          onClick={() => setActiveTab('manual')}
+        >
+          <MapPin size={18} /> Manual Report
+        </button>
+        <button 
+          className={`tab ${activeTab === 'map' ? 'active' : ''}`}
+          onClick={() => setActiveTab('map')}
+        >
+          <Navigation size={18} /> Live Map
+        </button>
+        <button 
+          className={`tab ${activeTab === 'analytics' ? 'active' : ''}`}
+          onClick={() => setActiveTab('analytics')}
+        >
+          <Activity size={18} /> Analytics
+        </button>
       </div>
 
-      {/* Content */}
-      <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '32px 24px' }}>
-        {/* AI Detection Tab */}
+      <main className="container">
         {activeTab === 'ai' && (
-          <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '32px' }}>
-            <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '24px' }}>🤖 Computer Vision Analysis</h2>
-            
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                background: loading ? 'rgba(251, 146, 60, 0.5)' : '#fb923c',
-                color: 'white',
-                padding: '12px 24px',
-                borderRadius: '8px',
-                fontWeight: '600',
-                marginBottom: '24px',
-                border: 'none',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                fontSize: '16px',
-                transition: 'all 0.3s ease',
-                opacity: loading ? 0.6 : 1
-              }}
-              onMouseEnter={(e) => !loading && (e.target.style.background = '#f97316')}
-              onMouseLeave={(e) => !loading && (e.target.style.background = '#fb923c')}
-            >
-              <Camera size={20} />
-              {loading ? 'Processing...' : 'Upload Image from Dashcam'}
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleImageUpload}
-              hidden
-            />
+          <div className="ai-view">
+            <div className="ai-upload-section">
+              <h2>📸 AI-Powered Hazard Detection</h2>
+              <p className="subtitle">Upload dashcam footage or phone images for automatic hazard detection</p>
+              
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImageUpload}
+                accept="image/*"
+                style={{ display: 'none' }}
+              />
+              
+              <button 
+                className="upload-btn"
+                onClick={() => fileInputRef.current.click()}
+                disabled={!aiModelsLoaded}
+              >
+                <Upload size={20} />
+                {aiModelsLoaded ? 'Upload Image from Dashcam' : 'Loading AI Models...'}
+              </button>
 
-            {uploadedImage && (
-              <div style={{ marginTop: '24px' }}>
-                <div style={{ background: 'rgba(0, 0, 0, 0.4)', borderRadius: '8px', padding: '16px', marginBottom: '24px', border: '1px solid #3b82f6' }}>
-                  <img src={uploadedImage} alt="Uploaded" style={{ width: '100%', maxHeight: '400px', objectFit: 'contain', borderRadius: '8px' }} />
+              {uploadedImage && (
+                <div className="image-preview">
+                  <h3>Uploaded Image</h3>
+                  <img 
+                    ref={imageRef}
+                    src={uploadedImage} 
+                    alt="Uploaded" 
+                    onLoad={analyzeImage}
+                    style={{ maxWidth: '100%', borderRadius: '10px' }}
+                  />
+                  <canvas ref={canvasRef} style={{ display: 'none' }} />
                 </div>
+              )}
 
-                {detectedHazards.length > 0 && (
-                  <div>
-                    <h3 style={{ fontWeight: 'bold', fontSize: '18px', marginBottom: '16px' }}>Detected Hazards:</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {detectedHazards.map((hazard, idx) => (
-                        <div key={idx} style={{ background: 'rgba(59, 130, 246, 0.2)', border: '1px solid #3b82f6', padding: '16px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <p style={{ fontWeight: 'bold', textTransform: 'capitalize' }}>{hazard.type}</p>
-                            <p style={{ fontSize: '14px', color: '#d1d5db' }}>Confidence: {hazard.confidence}%</p>
-                            <p style={{ fontSize: '12px', color: '#9ca3af' }}>Detected: {hazard.class}</p>
-                          </div>
-                          <button
-                            onClick={() => reportDetectedHazard(hazard)}
-                            style={{
-                              background: '#22c55e',
-                              color: 'white',
-                              padding: '8px 16px',
-                              borderRadius: '6px',
-                              fontWeight: '600',
-                              border: 'none',
-                              cursor: 'pointer',
-                              transition: 'all 0.3s ease'
-                            }}
-                            onMouseEnter={(e) => e.target.style.background = '#16a34a'}
-                            onMouseLeave={(e) => e.target.style.background = '#22c55e'}
-                          >
-                            Report
-                          </button>
+              {analyzing && (
+                <div className="analyzing">
+                  <div className="spinner"></div>
+                  <p>🤖 AI analyzing image...</p>
+                  <p className="small">Detecting hazards with TensorFlow.js (80+ object types)...</p>
+                </div>
+              )}
+
+              {detectedHazards.length > 0 && (
+                <div className="detection-results">
+                  <h3>✅ Detected Hazards ({detectedHazards.length})</h3>
+                  <div className="hazards-grid">
+                    {detectedHazards.map((hazard, idx) => (
+                      <div key={idx} className="detected-hazard">
+                        <AlertTriangle size={24} color="#dc3545" />
+                        <div>
+                          <strong>{hazard.type.toUpperCase()}</strong>
+                          <p>Confidence: {hazard.confidence}%</p>
+                          <p className="small">Detected: {hazard.class}</p>
                         </div>
-                      ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {processedImage && (
+                <div className="image-preview">
+                  <h3>🔍 Analyzed Image</h3>
+                  <p className="small">Hazards marked with bounding boxes</p>
+                  <img 
+                    src={processedImage} 
+                    alt="Processed" 
+                    style={{ maxWidth: '100%', borderRadius: '10px' }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {detectedHazards.length > 0 && (
+              <div className="report-section">
+                <h2>Report Detected Hazard</h2>
+                <form onSubmit={handleSubmit}>
+                  <div className="form-group">
+                    <label>Hazard Type (Auto-detected):</label>
+                    <select name="type" value={formData.type} onChange={handleChange}>
+                      <option value="pothole">🕳️ Pothole</option>
+                      <option value="debris">🪨 Debris</option>
+                      <option value="flooding">💧 Flooding</option>
+                      <option value="accident">🚗 Accident</option>
+                      <option value="animal">🐕 Animal</option>
+                    </select>
+                  </div>
+
+                  <div className="location-row">
+                    <div className="form-group">
+                      <label>Latitude:</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="latitude"
+                        value={formData.latitude}
+                        onChange={handleChange}
+                        required
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Longitude:</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="longitude"
+                        value={formData.longitude}
+                        onChange={handleChange}
+                        required
+                      />
                     </div>
                   </div>
-                )}
+
+                  <button type="button" className="location-btn" onClick={useMyLocation}>
+                    <Navigation size={16} /> Use My Location
+                  </button>
+
+                  <div className="form-group">
+                    <label>Severity (Auto-detected):</label>
+                    <select name="severity" value={formData.severity} onChange={handleChange}>
+                      <option value="low">🟢 Low</option>
+                      <option value="medium">🟡 Medium</option>
+                      <option value="high">🔴 High</option>
+                    </select>
+                  </div>
+
+                  <button type="submit" className="submit-btn">
+                    Report to Network
+                  </button>
+                </form>
               </div>
             )}
           </div>
         )}
 
-        {/* Manual Report Tab */}
         {activeTab === 'manual' && (
-          <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '32px', maxWidth: '600px' }}>
-            <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '24px' }}>📍 Report Hazard Manually</h2>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Hazard Type</label>
-                <select
-                  value={manualReport.type}
-                  onChange={(e) => setManualReport({...manualReport, type: e.target.value})}
-                  style={{ width: '100%', background: 'rgba(30, 58, 138, 0.6)', border: '1px solid #3b82f6', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer' }}
-                >
-                  <option value="debris">Debris</option>
-                  <option value="pothole">Pothole</option>
-                  <option value="accident">Accident</option>
-                  <option value="flooding">Flooding</option>
-                </select>
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Severity</label>
-                <select
-                  value={manualReport.severity}
-                  onChange={(e) => setManualReport({...manualReport, severity: e.target.value})}
-                  style={{ width: '100%', background: 'rgba(30, 58, 138, 0.6)', border: '1px solid #3b82f6', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer' }}
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>📍 Location</label>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                  <input
-                    type="text"
-                    value={manualReport.locationName}
-                    readOnly
-                    onClick={() => setShowLocationPicker(!showLocationPicker)}
-                    style={{ flex: 1, background: 'rgba(30, 58, 138, 0.6)', border: '1px solid #3b82f6', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer' }}
-                    placeholder="Select location..."
-                  />
-                  <button
-                    onClick={getUserLocation}
-                    style={{
-                      background: '#3b82f6',
-                      color: 'white',
-                      padding: '8px 12px',
-                      borderRadius: '6px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontWeight: '500',
-                      fontSize: '12px',
-                      transition: 'all 0.3s ease'
-                    }}
-                    onMouseEnter={(e) => e.target.style.background = '#2563eb'}
-                    onMouseLeave={(e) => e.target.style.background = '#3b82f6'}
-                  >
-                    📍 Live
-                  </button>
+          <div className="ai-view">
+            <div className="report-section">
+              <h2>📍 Manual Hazard Report</h2>
+              <p className="subtitle">Report road hazards manually with your current location</p>
+              
+              <form onSubmit={handleSubmit}>
+                <div className="form-group">
+                  <label>Hazard Type:</label>
+                  <select name="type" value={formData.type} onChange={handleChange}>
+                    <option value="pothole">🕳️ Pothole</option>
+                    <option value="debris">🪨 Debris</option>
+                    <option value="flooding">💧 Flooding</option>
+                    <option value="accident">🚗 Accident</option>
+                    <option value="animal">🐕 Animal on Road</option>
+                  </select>
                 </div>
 
-                {showLocationPicker && (
-                  <div style={{ background: 'rgba(30, 58, 138, 0.8)', border: '1px solid #3b82f6', borderRadius: '8px', padding: '12px', marginBottom: '12px', maxHeight: '200px', overflowY: 'auto' }}>
-                    <p style={{ fontSize: '12px', fontWeight: '500', marginBottom: '8px', color: '#9ca3af' }}>Quick Select Locations:</p>
-                    {locationPresets.map((loc, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => {
-                          if (loc.action === 'live') {
-                            getUserLocation();
-                          } else {
-                            setManualReport(prev => ({
-                              ...prev,
-                              latitude: loc.lat,
-                              longitude: loc.lng,
-                              locationName: loc.name
-                            }));
-                          }
-                          setShowLocationPicker(false);
-                        }}
-                        style={{
-                          display: 'block',
-                          width: '100%',
-                          background: 'rgba(59, 130, 246, 0.2)',
-                          color: 'white',
-                          padding: '8px 12px',
-                          borderRadius: '6px',
-                          border: '1px solid #3b82f6',
-                          marginBottom: '6px',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: '13px',
-                          fontWeight: '500',
-                          transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => e.target.style.background = 'rgba(59, 130, 246, 0.4)'}
-                        onMouseLeave={(e) => e.target.style.background = 'rgba(59, 130, 246, 0.2)'}
-                      >
-                        {loc.name === 'Current Location' ? '📍 ' : '📌 '}{loc.name}
-                      </button>
-                    ))}
+                <div className="location-row">
+                  <div className="form-group">
+                    <label>Latitude:</label>
+                    <input
+                      type="number"
+                      step="any"
+                      name="latitude"
+                      value={formData.latitude}
+                      onChange={handleChange}
+                      placeholder="13.3409"
+                      required
+                    />
                   </div>
-                )}
-                <p style={{ fontSize: '12px', color: '#9ca3af' }}>Lat: {manualReport.latitude.toFixed(4)} | Lng: {manualReport.longitude.toFixed(4)}</p>
-              </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Description</label>
-                <textarea
-                  value={manualReport.description}
-                  onChange={(e) => setManualReport({...manualReport, description: e.target.value})}
-                  style={{ width: '100%', background: 'rgba(30, 58, 138, 0.6)', border: '1px solid #3b82f6', borderRadius: '6px', padding: '12px', color: 'white', minHeight: '120px', fontFamily: 'inherit', resize: 'vertical' }}
-                  placeholder="Describe the hazard..."
-                />
-              </div>
+                  <div className="form-group">
+                    <label>Longitude:</label>
+                    <input
+                      type="number"
+                      step="any"
+                      name="longitude"
+                      value={formData.longitude}
+                      onChange={handleChange}
+                      placeholder="74.7421"
+                      required
+                    />
+                  </div>
+                </div>
 
-              <button
-                onClick={reportManualHazard}
-                style={{
-                  width: '100%',
-                  background: '#22c55e',
-                  color: 'white',
-                  padding: '12px',
-                  borderRadius: '6px',
-                  fontWeight: 'bold',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: '16px',
-                  transition: 'all 0.3s ease'
-                }}
-                onMouseEnter={(e) => e.target.style.background = '#16a34a'}
-                onMouseLeave={(e) => e.target.style.background = '#22c55e'}
-              >
-                Report to Network
-              </button>
+                <button type="button" className="location-btn" onClick={useMyLocation}>
+                  <Navigation size={16} /> Use My Current Location
+                </button>
+
+                <div className="form-group">
+                  <label>Severity Level:</label>
+                  <select name="severity" value={formData.severity} onChange={handleChange}>
+                    <option value="low">🟢 Low - Minor issue</option>
+                    <option value="medium">🟡 Medium - Requires attention</option>
+                    <option value="high">🔴 High - Dangerous</option>
+                  </select>
+                </div>
+
+                <button type="submit" className="submit-btn">
+                  📢 Report Hazard
+                </button>
+              </form>
+            </div>
+
+            <div className="report-section">
+              <h2>Recent Reports ({hazards.length})</h2>
+              {hazards.length === 0 ? (
+                <p className="no-data">No hazards reported yet</p>
+              ) : (
+                <div className="hazards-list" style={{maxHeight: '600px', overflowY: 'auto'}}>
+                  {hazards.slice(0, 10).map((hazard) => (
+                    <div key={hazard.id} className={`detected-hazard`} style={{
+                      background: hazard.severity === 'high' ? 'rgba(220, 53, 69, 0.1)' : 
+                                 hazard.severity === 'medium' ? 'rgba(255, 193, 7, 0.1)' : 
+                                 'rgba(40, 167, 69, 0.1)',
+                      border: `1px solid ${hazard.severity === 'high' ? '#dc3545' : 
+                                          hazard.severity === 'medium' ? '#ffc107' : 
+                                          '#28a745'}`,
+                      marginBottom: '12px',
+                      padding: '16px',
+                      borderRadius: '12px'
+                    }}>
+                      <AlertTriangle size={24} color={
+                        hazard.severity === 'high' ? '#dc3545' : 
+                        hazard.severity === 'medium' ? '#ffc107' : 
+                        '#28a745'
+                      } />
+                      <div>
+                        <strong>{hazard.type.toUpperCase()}</strong>
+                        {hazard.confidence && <p>AI Confidence: {hazard.confidence}%</p>}
+                        <p className="small">Location: {hazard.latitude.toFixed(4)}, {hazard.longitude.toFixed(4)}</p>
+                        <p className="small">Severity: {hazard.severity.toUpperCase()}</p>
+                        <p className="small">{new Date(hazard.timestamp).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Analytics Tab */}
+        {activeTab === 'map' && currentLocation && (
+          <div className="map-view">
+            <MapContainer 
+              center={[currentLocation.lat, currentLocation.lng]} 
+              zoom={13} 
+              style={{ height: '100%', width: '100%' }}
+            >
+              <TileLayer
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              
+              <Circle
+                center={[currentLocation.lat, currentLocation.lng]}
+                radius={100}
+                pathOptions={{ color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.3 }}
+              />
+
+              {hazards.map((hazard) => (
+                <Marker 
+                  key={hazard.id} 
+                  position={[hazard.latitude, hazard.longitude]}
+                >
+                  <Popup>
+                    <div>
+                      <h4>{hazard.type.toUpperCase()}</h4>
+                      <p><strong>Severity:</strong> {hazard.severity}</p>
+                      {hazard.confidence && (
+                        <p><strong>AI Confidence:</strong> {hazard.confidence}%</p>
+                      )}
+                      <p><strong>Reported:</strong> {new Date(hazard.timestamp).toLocaleString()}</p>
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}
+            </MapContainer>
+          </div>
+        )}
+
         {activeTab === 'analytics' && (
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '24px', marginBottom: '24px' }}>
-              <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '24px', textAlign: 'center' }}>
-                <Activity size={48} color="#3b82f6" style={{ margin: '0 auto 16px' }} />
-                <p style={{ fontSize: '36px', fontWeight: 'bold' }}>{stats.debrisCt}</p>
-                <p style={{ color: '#9ca3af' }}>Debris Hazards</p>
+          <div className="analytics-view">
+            <div className="stats-grid">
+              <div className="stat-card">
+                <AlertTriangle size={32} color="#00d4ff" />
+                <h3>{hazards.length}</h3>
+                <p>Total Hazards</p>
               </div>
-              <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '24px', textAlign: 'center' }}>
-                <AlertTriangle size={48} color="#fbbf24" style={{ margin: '0 auto 16px' }} />
-                <p style={{ fontSize: '36px', fontWeight: 'bold' }}>{stats.potholeCt}</p>
-                <p style={{ color: '#9ca3af' }}>Potholes</p>
+              <div className="stat-card">
+                <TrendingUp size={32} color="#dc3545" />
+                <h3>{hazards.filter(h => h.severity === 'high').length}</h3>
+                <p>High Severity</p>
               </div>
-              <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '24px', textAlign: 'center' }}>
-                <TrendingUp size={48} color="#3b82f6" style={{ margin: '0 auto 16px' }} />
-                <p style={{ fontSize: '36px', fontWeight: 'bold' }}>{stats.accidentCt}</p>
-                <p style={{ color: '#9ca3af' }}>Accidents</p>
+              <div className="stat-card">
+                <Cpu size={32} color="#00d4ff" />
+                <h3>{hazards.filter(h => h.confidence).length}</h3>
+                <p>AI Detected</p>
               </div>
             </div>
 
-            <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #3b82f6', borderRadius: '12px', padding: '24px' }}>
-              <h3 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '16px' }}>Recent Hazards</h3>
-              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                {hazards.length === 0 ? (
-                  <p style={{ color: '#9ca3af' }}>No hazards reported yet</p>
+            <div className="charts-grid">
+              <div className="chart-card">
+                <h3>Hazards by Type</h3>
+                {hazardTypeData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={hazardTypeData}>
+                      <XAxis dataKey="name" stroke="#fff" />
+                      <YAxis stroke="#fff" />
+                      <Tooltip contentStyle={{background: '#1a1f3a', border: 'none'}} />
+                      <Bar dataKey="value" fill="#00d4ff" />
+                    </BarChart>
+                  </ResponsiveContainer>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {hazards.slice(-10).reverse().map((h, idx) => (
-                      <div key={idx} style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '12px', borderRadius: '6px', border: '1px solid #3b82f6', fontSize: '14px' }}>
-                        <p style={{ fontWeight: 'bold', textTransform: 'capitalize' }}>{h.type} - Severity: {h.severity}</p>
-                        <p style={{ color: '#9ca3af' }}>Confidence: {h.confidence}% | Reported {new Date(h.timestamp).toLocaleTimeString()}</p>
-                      </div>
-                    ))}
-                  </div>
+                  <p className="no-data">No data yet</p>
                 )}
               </div>
+
+              <div className="chart-card">
+                <h3>Severity Distribution</h3>
+                {severityData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <PieChart>
+                      <Pie
+                        data={severityData}
+                        cx="50%"
+                        cy="50%"
+                        labelLine={false}
+                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                        outerRadius={80}
+                        dataKey="value"
+                      >
+                        {severityData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={SEVERITY_COLORS[index % SEVERITY_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{background: '#1a1f3a', border: 'none'}} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="no-data">No data yet</p>
+                )}
+              </div>
+            </div>
+
+            <div className="insights-card">
+              <h3>🚗 VW Integration & Key Features</h3>
+              <ul>
+                <li>✅ <strong>Computer Vision:</strong> Real TensorFlow.js detecting 80+ object types</li>
+                <li>✅ <strong>Duplicate Prevention:</strong> Smart filtering within 100m radius</li>
+                <li>✅ <strong>Near Real-Time:</strong> WebSocket alerts under 200ms</li>
+                <li>✅ <strong>Auto-Classification:</strong> AI determines hazard type & severity</li>
+                <li>✅ <strong>Manual Override:</strong> Drivers can report hazards instantly</li>
+                <li>✅ <strong>Geolocation:</strong> Precise hazard mapping with GPS</li>
+              </ul>
             </div>
           </div>
         )}
@@ -509,3 +617,5 @@ export default function HazardDetectionApp() {
     </div>
   );
 }
+
+export default App;
