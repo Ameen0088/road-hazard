@@ -43,18 +43,59 @@ function App() {
 
   useEffect(() => {
     const socket = io(API_URL);
+    const userId = 'user_' + Date.now();
     
     socket.on('connect', () => {
       setConnected(true);
+      console.log('✅ Connected to server');
     });
 
     socket.on('hazard_alert', (hazard) => {
       setHazards(prev => [hazard, ...prev]);
     });
+    
+    // NEW: Proximity Alert Listener
+    socket.on('proximity_alert', (data) => {
+      const { hazard, distance } = data;
+      console.log('🚨 PROXIMITY ALERT:', hazard, 'Distance:', distance, 'km');
+      
+      // Browser notification
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('⚠️ Road Hazard Ahead!', {
+          body: `${hazard.type.toUpperCase()} detected ${distance}km ahead. Severity: ${hazard.severity.toUpperCase()}`,
+          icon: '/logo192.png',
+          tag: `hazard-${hazard.id}`,
+          requireInteraction: true
+        });
+      }
+      
+      // In-app alert
+      alert(`🚨 HAZARD ALERT!\n\n${hazard.type.toUpperCase()} detected ${distance}km ahead!\n\nSeverity: ${hazard.severity.toUpperCase()}\n\nDrive carefully!`);
+    });
+    
+    // NEW: Nearby Hazards Listener
+    socket.on('nearby_hazards', (data) => {
+      console.log('📍 Nearby hazards:', data.hazards);
+      
+      if (data.hazards.length > 0) {
+        const hazardList = data.hazards.map(h => 
+          `• ${h.type.toUpperCase()} (${h.distance.toFixed(2)}km away - ${h.severity})`
+        ).join('\n');
+        
+        alert(`📍 ${data.hazards.length} HAZARDS ON YOUR ROUTE:\n\n${hazardList}\n\nStay alert!`);
+      }
+    });
 
     socket.on('disconnect', () => {
       setConnected(false);
     });
+    
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().then(permission => {
+        console.log('Notification permission:', permission);
+      });
+    }
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -69,6 +110,13 @@ function App() {
             latitude: location.lat.toFixed(6),
             longitude: location.lng.toFixed(6)
           }));
+          
+          // Register location with server
+          socket.emit('register_location', {
+            userId,
+            latitude: location.lat,
+            longitude: location.lng
+          });
         },
         () => {
           const defaultLocation = { lat: 13.3409, lng: 74.7421 };
@@ -78,6 +126,13 @@ function App() {
             latitude: defaultLocation.lat.toFixed(6),
             longitude: defaultLocation.lng.toFixed(6)
           }));
+          
+          // Register default location
+          socket.emit('register_location', {
+            userId,
+            latitude: defaultLocation.lat,
+            longitude: defaultLocation.lng
+          });
         }
       );
     }
@@ -85,10 +140,31 @@ function App() {
     loadModels().then(loaded => {
       setAiModelsLoaded(loaded);
     });
+    
+    // Update location every 10 seconds
+    const locationInterval = setInterval(() => {
+      if (navigator.geolocation && socket.connected) {
+        navigator.geolocation.getCurrentPosition((position) => {
+          const newLocation = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          };
+          setCurrentLocation(newLocation);
+          
+          socket.emit('update_location', {
+            userId,
+            latitude: newLocation.lat,
+            longitude: newLocation.lng
+          });
+        });
+      }
+    }, 10000);
 
-    return () => socket.disconnect();
+    return () => {
+      clearInterval(locationInterval);
+      socket.disconnect();
+    };
   }, []);
-
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
