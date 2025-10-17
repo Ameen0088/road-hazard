@@ -727,7 +727,195 @@ function App() {
             )}
           </div>
         )}
+        {/* MANUAL REPORT TAB */}
+        {activeTab === 'manual' && (
+          <div className="detect-view">
+            <div className="report-section">
+              <h2>📍 Report Hazard Manually</h2>
+              <p style={{color: '#999', marginBottom: '20px'}}>
+                Report a hazard without uploading an image
+              </p>
+              
+              <div className="form-group">
+                <label>Hazard Type</label>
+                <select 
+                  value={formData.type} 
+                  onChange={(e) => setFormData({...formData, type: e.target.value})}
+                >
+                  <option value="pothole">Pothole</option>
+                  <option value="accident">Accident</option>
+                  <option value="debris">Road Debris</option>
+                  <option value="animal">Animal on Road</option>
+                </select>
+              </div>
 
+              <div className="form-group">
+                <label>Severity</label>
+                <select 
+                  value={formData.severity} 
+                  onChange={(e) => setFormData({...formData, severity: e.target.value})}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>📍 Location Selection</label>
+                
+                {/* Quick Location Options */}
+                <div style={{display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap'}}>
+                  <button 
+                    className="location-btn" 
+                    onClick={useMyLocation}
+                    style={{flex: '1', minWidth: '150px'}}
+                  >
+                    <Navigation size={20} />
+                    Use GPS Location
+                  </button>
+                  
+                  <button 
+                    className="location-btn" 
+                    onClick={() => {
+                      const lat = prompt('Enter Latitude (e.g., 13.3409):');
+                      const lng = prompt('Enter Longitude (e.g., 74.7421):');
+                      if (lat && lng) {
+                        setFormData(prev => ({
+                          ...prev,
+                          latitude: parseFloat(lat).toFixed(6),
+                          longitude: parseFloat(lng).toFixed(6)
+                        }));
+                      }
+                    }}
+                    style={{flex: '1', minWidth: '150px', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'}}
+                  >
+                    📝 Enter Manually
+                  </button>
+                </div>
+
+                {/* Preset Locations Dropdown */}
+                <div className="form-group">
+                  <label style={{fontSize: '14px', color: '#999'}}>Or select a preset location:</label>
+                  <select 
+                    onChange={(e) => {
+                      const [lat, lng] = e.target.value.split(',');
+                      if (lat && lng) {
+                        setFormData(prev => ({
+                          ...prev,
+                          latitude: parseFloat(lat).toFixed(6),
+                          longitude: parseFloat(lng).toFixed(6)
+                        }));
+                      }
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      background: 'rgba(255,255,255,0.05)',
+                      color: 'white',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="">-- Select Preset Location --</option>
+                    <option value="13.3409,74.7421">Udupi, Karnataka</option>
+                    <option value="12.9716,77.5946">Bangalore, Karnataka</option>
+                    <option value="13.0827,80.2707">Chennai, Tamil Nadu</option>
+                    <option value="19.0760,72.8777">Mumbai, Maharashtra</option>
+                    <option value="28.7041,77.1025">Delhi</option>
+                    <option value="17.3850,78.4867">Hyderabad, Telangana</option>
+                    <option value="22.5726,88.3639">Kolkata, West Bengal</option>
+                    <option value="23.0225,72.5714">Ahmedabad, Gujarat</option>
+                    <option value="26.9124,75.7873">Jaipur, Rajasthan</option>
+                    <option value="11.0168,76.9558">Coimbatore, Tamil Nadu</option>
+                  </select>
+                </div>
+
+                {/* Manual Input Fields */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '10px',
+                  marginTop: '15px'
+                }}>
+                  <div>
+                    <label style={{fontSize: '13px', color: '#999'}}>Latitude</label>
+                    <input
+                      type="number"
+                      step="0.000001"
+                      value={formData.latitude}
+                      onChange={(e) => setFormData({...formData, latitude: e.target.value})}
+                      placeholder="e.g., 13.3409"
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        background: 'rgba(255,255,255,0.05)',
+                        color: 'white',
+                        fontSize: '14px'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{fontSize: '13px', color: '#999'}}>Longitude</label>
+                    <input
+                      type="number"
+                      step="0.000001"
+                      value={formData.longitude}
+                      onChange={(e) => setFormData({...formData, longitude: e.target.value})}
+                      placeholder="e.g., 74.7421"
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        background: 'rgba(255,255,255,0.05)',
+                        color: 'white',
+                        fontSize: '14px'
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Location Display */}
+              <div className="location-display" style={{
+                background: 'rgba(0,212,255,0.1)',
+                padding: '15px',
+                borderRadius: '8px',
+                border: '1px solid rgba(0,212,255,0.3)',
+                marginTop: '15px'
+              }}>
+                <p style={{fontSize: '14px', fontWeight: 'bold', color: '#00d4ff', marginBottom: '5px'}}>
+                  📍 Selected Location:
+                </p>
+                <p style={{fontSize: '13px'}}>
+                  Latitude: {formData.latitude || 'Not set'}
+                </p>
+                <p style={{fontSize: '13px'}}>
+                  Longitude: {formData.longitude || 'Not set'}
+                </p>
+              </div>
+
+              <button 
+                className="report-btn"
+                onClick={reportHazard}
+                disabled={!formData.latitude || !formData.longitude}
+                style={{
+                  marginTop: '20px',
+                  opacity: (!formData.latitude || !formData.longitude) ? 0.5 : 1,
+                  cursor: (!formData.latitude || !formData.longitude) ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <AlertTriangle size={20} />
+                Report Hazard to Network
+              </button>
+            </div>
+          </div>
+        )}
         {activeTab === 'alerts' && (
           <div className="alerts-view">
             <h2>📢 Recent Alerts</h2>
