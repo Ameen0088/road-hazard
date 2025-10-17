@@ -22,16 +22,18 @@ if (!fs.existsSync(uploadsDir)) {
 
 app.use(cors());
 app.use(express.json());
-app.use(fileUpload());
+app.use(fileUpload({
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB for videos
+}));
 app.use('/uploads', express.static('uploads'));
 
-// Store reported hazards and active users
-const reportedHazards = [];
-const activeUsers = new Map(); // userId -> {socketId, latitude, longitude}
+// Store hazards with status (active/resolved)
+const hazards = [];
+const activeUsers = new Map();
 
-// Calculate distance between two coordinates (Haversine formula)
+// Calculate distance between coordinates (Haversine formula)
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth's radius in km
+  const R = 6371; // Earth radius in km
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = 
@@ -39,37 +41,42 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLon/2) * Math.sin(dLon/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c; // Distance in km
+  return R * c;
 }
 
 // Check for duplicate hazards
 function isDuplicate(lat, lng, type) {
-  const RADIUS = 0.1; // 100 meters in km
+  const RADIUS = 0.1; // 100 meters
   const TIME_WINDOW = 300000; // 5 minutes
   const now = Date.now();
   
-  return reportedHazards.some(h => {
+  return hazards.some(h => {
+    if (h.status === 'resolved') return false;
     const distance = calculateDistance(h.latitude, h.longitude, lat, lng);
     const timeDiff = now - new Date(h.timestamp).getTime();
     return distance < RADIUS && h.type === type && timeDiff < TIME_WINDOW;
   });
 }
 
-// Get nearby hazards for a user
-function getNearbyHazards(userLat, userLng, radiusKm = 1) {
-  return reportedHazards.filter(hazard => {
-    const distance = calculateDistance(userLat, userLng, hazard.latitude, hazard.longitude);
-    return distance <= radiusKm;
-  }).map(hazard => ({
-    ...hazard,
-    distance: calculateDistance(userLat, userLng, hazard.latitude, hazard.longitude)
-  }));
+// Get active nearby hazards
+function getActiveNearbyHazards(userLat, userLng, radiusKm = 1) {
+  return hazards
+    .filter(hazard => hazard.status === 'active')
+    .filter(hazard => {
+      const distance = calculateDistance(userLat, userLng, hazard.latitude, hazard.longitude);
+      return distance <= radiusKm;
+    })
+    .map(hazard => ({
+      ...hazard,
+      distance: calculateDistance(userLat, userLng, hazard.latitude, hazard.longitude)
+    }));
 }
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date() });
 });
 
+// Report new hazard
 app.post('/api/hazards/report', (req, res) => {
   const { type, latitude, longitude, severity, deviceId, confidence, imageUrl } = req.body;
   
@@ -92,18 +99,21 @@ app.post('/api/hazards/report', (req, res) => {
     severity,
     confidence: confidence || 100,
     imageUrl: imageUrl || null,
-    timestamp: new Date()
+    timestamp: new Date(),
+    status: 'active',
+    reportedBy: deviceId,
+    resolvedBy: null,
+    resolvedAt: null,
+    resolvedImageUrl: null
   };
   
-  reportedHazards.push(hazard);
-  
-  // Broadcast to all connected clients
+  hazards.push(hazard);
   io.emit('hazard_alert', hazard);
   
-  // Send proximity alerts to nearby users
+  // Send proximity alerts
   activeUsers.forEach((user, userId) => {
     const distance = calculateDistance(user.latitude, user.longitude, latitude, longitude);
-    if (distance <= 1) { // Within 1km
+    if (distance <= 1) {
       io.to(user.socketId).emit('proximity_alert', {
         hazard,
         distance: distance.toFixed(2)
@@ -115,6 +125,53 @@ app.post('/api/hazards/report', (req, res) => {
   res.json({ success: true, duplicate: false, hazard });
 });
 
+// Resolve hazard with photo
+app.post('/api/hazards/resolve', (req, res) => {
+  const { hazardId, latitude, longitude, deviceId, imageUrl } = req.body;
+  
+  const hazard = hazards.find(h => h.id === parseInt(hazardId));
+  
+  if (!hazard) {
+    return res.status(404).json({ error: 'Hazard not found' });
+  }
+  
+  if (hazard.status === 'resolved') {
+    return res.json({ 
+      success: false, 
+      message: 'Hazard already resolved' 
+    });
+  }
+  
+  const distance = calculateDistance(latitude, longitude, hazard.latitude, hazard.longitude);
+  
+  if (distance > 1) {
+    return res.json({
+      success: false,
+      message: `You must be within 1km of the hazard to resolve it. You are ${distance.toFixed(2)}km away.`
+    });
+  }
+  
+  hazard.status = 'resolved';
+  hazard.resolvedBy = deviceId;
+  hazard.resolvedAt = new Date();
+  hazard.resolvedImageUrl = imageUrl;
+  
+  console.log('✅ Hazard resolved:', hazard.id, 'by', deviceId);
+  
+  io.emit('hazard_resolved', {
+    hazardId: hazard.id,
+    resolvedAt: hazard.resolvedAt,
+    resolvedBy: deviceId
+  });
+  
+  res.json({ 
+    success: true, 
+    message: 'Hazard marked as resolved',
+    hazard 
+  });
+});
+
+// Get nearby active hazards
 app.get('/api/hazards/nearby', (req, res) => {
   const { latitude, longitude, radius } = req.query;
   
@@ -122,7 +179,7 @@ app.get('/api/hazards/nearby', (req, res) => {
     return res.status(400).json({ error: 'Latitude and longitude required' });
   }
   
-  const nearbyHazards = getNearbyHazards(
+  const nearbyHazards = getActiveNearbyHazards(
     parseFloat(latitude), 
     parseFloat(longitude), 
     parseFloat(radius) || 1
@@ -131,49 +188,64 @@ app.get('/api/hazards/nearby', (req, res) => {
   res.json({ hazards: nearbyHazards });
 });
 
+// Get all hazards
+app.get('/api/hazards', (req, res) => {
+  const { status } = req.query;
+  
+  let filteredHazards = hazards;
+  
+  if (status === 'active') {
+    filteredHazards = hazards.filter(h => h.status === 'active');
+  } else if (status === 'resolved') {
+    filteredHazards = hazards.filter(h => h.status === 'resolved');
+  }
+  
+  res.json({ 
+    hazards: filteredHazards.slice(-50),
+    total: filteredHazards.length,
+    active: hazards.filter(h => h.status === 'active').length,
+    resolved: hazards.filter(h => h.status === 'resolved').length
+  });
+});
+
+// Upload image/video
 app.post('/api/upload', (req, res) => {
-  if (!req.files || !req.files.image) {
-    return res.status(400).json({ error: 'No image uploaded' });
+  if (!req.files || (!req.files.image && !req.files.video)) {
+    return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const image = req.files.image;
-  const filename = `${Date.now()}_${image.name}`;
+  const file = req.files.image || req.files.video;
+  const fileType = req.files.image ? 'image' : 'video';
+  const filename = `${Date.now()}_${file.name}`;
   const uploadPath = path.join(uploadsDir, filename);
 
-  image.mv(uploadPath, (err) => {
+  file.mv(uploadPath, (err) => {
     if (err) {
       console.error('Upload error:', err);
       return res.status(500).json({ error: 'Upload failed' });
     }
 
-    const imageUrl = `/uploads/${filename}`;
-    console.log('📸 Image uploaded:', imageUrl);
-    res.json({ success: true, imageUrl });
+    const fileUrl = `/uploads/${filename}`;
+    console.log(`📸 ${fileType.toUpperCase()} uploaded:`, fileUrl);
+    res.json({ success: true, fileUrl, fileType });
   });
-});
-
-app.get('/api/hazards', (req, res) => {
-  res.json({ hazards: reportedHazards.slice(-50) });
 });
 
 io.on('connection', (socket) => {
   console.log('🔌 Client connected:', socket.id);
   
-  // Register user location
   socket.on('register_location', (data) => {
     const { userId, latitude, longitude } = data;
     activeUsers.set(userId, { socketId: socket.id, latitude, longitude });
     console.log(`📍 User ${userId} registered at ${latitude}, ${longitude}`);
     
-    // Send nearby hazards immediately
-    const nearbyHazards = getNearbyHazards(latitude, longitude, 1);
+    const nearbyHazards = getActiveNearbyHazards(latitude, longitude, 1);
     if (nearbyHazards.length > 0) {
       socket.emit('nearby_hazards', { hazards: nearbyHazards });
-      console.log(`📢 Sent ${nearbyHazards.length} nearby hazards to user ${userId}`);
+      console.log(`📢 Sent ${nearbyHazards.length} active nearby hazards to user ${userId}`);
     }
   });
   
-  // Update user location in real-time
   socket.on('update_location', (data) => {
     const { userId, latitude, longitude } = data;
     const user = activeUsers.get(userId);
@@ -181,8 +253,7 @@ io.on('connection', (socket) => {
       user.latitude = latitude;
       user.longitude = longitude;
       
-      // Check for nearby hazards
-      const nearbyHazards = getNearbyHazards(latitude, longitude, 1);
+      const nearbyHazards = getActiveNearbyHazards(latitude, longitude, 1);
       if (nearbyHazards.length > 0) {
         socket.emit('nearby_hazards', { hazards: nearbyHazards });
       }
@@ -190,7 +261,6 @@ io.on('connection', (socket) => {
   });
   
   socket.on('disconnect', () => {
-    // Remove user from active users
     for (const [userId, user] of activeUsers.entries()) {
       if (user.socketId === socket.id) {
         activeUsers.delete(userId);
@@ -198,7 +268,6 @@ io.on('connection', (socket) => {
         break;
       }
     }
-    console.log('🔌 Client disconnected:', socket.id);
   });
 });
 
@@ -206,4 +275,6 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`✅ VW Hazard Detection Server running on http://localhost:${PORT}`);
   console.log(`📡 Proximity alerts enabled (1km radius)`);
+  console.log(`🗄️  Hazard persistence enabled`);
+  console.log(`🎥 Image & Video upload supported`);
 });
